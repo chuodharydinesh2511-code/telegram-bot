@@ -1,2 +1,3 @@
-python-telegram-bot
-pymongo[srv]
+python-telegram-bot==20.3
+pymongo[srv]==4.4.1
+dnspython==2.3.0
