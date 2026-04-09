@@ -191,4 +191,27 @@ async def main():
     await app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+ from telegram.ext import ApplicationBuilder
+
+app = ApplicationBuilder().token(TOKEN).build()
+
+app.add_handler(CommandHandler("login", login))
+app.add_handler(CommandHandler("addgroup", addgroup))
+app.add_handler(CommandHandler("removegroup", removegroup))
+app.add_handler(CommandHandler("groups", groups))
+app.add_handler(CommandHandler("start_posting", start_posting))
+app.add_handler(CommandHandler("stop_posting", stop_posting))
+app.add_handler(CommandHandler("broadcast", broadcast))
+app.add_handler(MessageHandler(filters.ALL, save_msg))
+
+# ✅ Worker start after bot starts
+async def start_worker(app):
+    await asyncio.sleep(5)
+    asyncio.create_task(worker(app))
+
+app.post_init = start_worker
+
+print("🔥 BOT RUNNING 🔥")
+
+# ✅ FINAL RUN (NO asyncio.run)
+app.run_polling(drop_pending_updates=True)
