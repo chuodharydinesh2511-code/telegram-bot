@@ -5,7 +5,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, fil
 from pymongo import MongoClient
 
 # ========= CONFIG =========
-TOKEN = "8763905320:AAHlYidU6y51XPpoXuZoVdvm7Eh5VGSttw0"
+TOKEN = "8763905320:AAEJMfgMW6C6PR1xj1bmMWHTqymOkMi7jVM"
 PASSWORD = "1234"
 MONGO_URL = "mongodb+srv://ashishhacks4_db_user:e3zBzWLAJxOYjn9Z@cluster0.lk7mlh3.mongodb.net/?retryWrites=true&w=majorityL"
 
