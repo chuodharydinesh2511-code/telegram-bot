@@ -153,7 +153,7 @@ async def worker(app):
 
                 messages_col.delete_one({"_id": msg["_id"]})
 
-        await asyncio.sleep(120)  # ⏱ TEST = 2 min (change to 3600 for 1 hour)
+        await asyncio.sleep(3600)  # ⏱ TEST = 2 min (change to 3600 for 1 hour)
 
 # ========= MAIN =========
 async def main():
