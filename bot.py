@@ -5,9 +5,9 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, fil
 from pymongo import MongoClient
 
 # ========= CONFIG =========
-TOKEN = "8763905320:AAEJMfgMW6C6PR1xj1bmMWHTqymOkMi7jVM"
+TOKEN = "8763905320:AAGSCeneXt4X5VGTqcReeuq1VP9ktgLRrPs"
 PASSWORD = "1234"
-MONGO_URL = "mongodb+srv://ashishhacks4_db_user:e3zBzWLAJxOYjn9Z@cluster0.lk7mlh3.mongodb.net/?retryWrites=true&w=majorityL"
+MONGO_URL = "mongodb+srv://ashishhacks4_db_user:e3zBzWLAJxOYjn9Z@cluster0.lk7mlh3.mongodb.net/?retryWrites=true&w=majority"
 
 # ========= DB =========
 client = MongoClient(MONGO_URL)
@@ -63,11 +63,9 @@ async def groups(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(text)
 
-# ========= SAVE MESSAGE (FIXED QUEUE) =========
+# ========= SAVE MESSAGE =========
 async def save_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-
-    if user_id not in authorized_users:
+    if update.effective_user.id not in authorized_users:
         return
 
     if update.message:
@@ -75,14 +73,12 @@ async def save_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "chat_id": update.message.chat_id,
             "message_id": update.message.message_id,
             "time": datetime.utcnow(),
-            "seq": datetime.utcnow().timestamp()  # 🔥 PERFECT ORDER FIX
+            "seq": datetime.utcnow().timestamp()
         })
 
 # ========= START POSTING =========
 async def start_posting(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-
-    if user_id not in authorized_users:
+    if update.effective_user.id not in authorized_users:
         return await update.message.reply_text("❌ Login first")
 
     settings_col.update_one(
@@ -105,9 +101,7 @@ async def stop_posting(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ========= BROADCAST =========
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-
-    if user_id not in authorized_users:
+    if update.effective_user.id not in authorized_users:
         return await update.message.reply_text("❌ Login first")
 
     if not update.message.reply_to_message:
@@ -128,12 +122,12 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("✅ Broadcast sent")
 
-# ========= WORKER (FINAL FIXED) =========
+# ========= WORKER =========
 async def worker(app):
     global worker_running
 
     if worker_running:
-        return  # prevent duplicate worker
+        return
 
     worker_running = True
 
@@ -143,7 +137,7 @@ async def worker(app):
         setting = settings_col.find_one({"_id": "status"})
 
         if setting and setting.get("posting"):
-            msgs = list(messages_col.find().sort("seq", 1).limit(10))  # 🔥 ORDER FIX
+            msgs = list(messages_col.find().sort("seq", 1).limit(10))
             groups = list(groups_col.find())
 
             for msg in msgs:
@@ -159,16 +153,12 @@ async def worker(app):
 
                 messages_col.delete_one({"_id": msg["_id"]})
 
-        await asyncio.sleep(120)  # ⏱ 1 hour
-
-# ========= START =========
-async def on_start(app):
-    app.create_task(worker(app))
+        await asyncio.sleep(120)  # ⏱ TEST = 2 min (change to 3600 for 1 hour)
 
 # ========= MAIN =========
-import asyncio
-
 async def main():
+    print("🔥 BOT STARTING 🔥")
+
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("login", login))
@@ -180,38 +170,15 @@ async def main():
     app.add_handler(CommandHandler("broadcast", broadcast))
     app.add_handler(MessageHandler(filters.ALL, save_msg))
 
-    # start worker AFTER bot starts
-    async def start_worker(app):
-        await asyncio.sleep(5)
-        asyncio.create_task(worker(app))
+    await app.initialize()
+    await app.start()
 
-    app.post_init = start_worker
-
-    print("🔥 BOT RUNNING 🔥")
-    await app.run_polling(drop_pending_updates=True)
-
-if __name__ == "__main__":
- from telegram.ext import ApplicationBuilder
-
-app = ApplicationBuilder().token(TOKEN).build()
-
-app.add_handler(CommandHandler("login", login))
-app.add_handler(CommandHandler("addgroup", addgroup))
-app.add_handler(CommandHandler("removegroup", removegroup))
-app.add_handler(CommandHandler("groups", groups))
-app.add_handler(CommandHandler("start_posting", start_posting))
-app.add_handler(CommandHandler("stop_posting", stop_posting))
-app.add_handler(CommandHandler("broadcast", broadcast))
-app.add_handler(MessageHandler(filters.ALL, save_msg))
-
-# ✅ Worker start after bot starts
-async def start_worker(app):
-    await asyncio.sleep(5)
     asyncio.create_task(worker(app))
 
-app.post_init = start_worker
+    await app.updater.start_polling()
 
-print("🔥 BOT RUNNING 🔥")
+    await asyncio.Event().wait()
 
-# ✅ FINAL RUN (NO asyncio.run)
-app.run_polling(drop_pending_updates=True)
+# ========= RUN =========
+if __name__ == "__main__":
+    asyncio.run(main())
