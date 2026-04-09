@@ -1,105 +1,99 @@
 import asyncio
-from datetime import datetime, timedelta
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+from datetime import datetime
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from pymongo import MongoClient
 
 TOKEN = "8763905320:AAHlYidU6y51XPpoXuZoVdvm7Eh5VGSttw0"
-PASSWORD = "dinesh123"
+PASSWORD = "1234"
 MONGO_URL = "mongodb+srv://ashishhacks4_db_user:e3zBzWLAJxOYjn9Z@cluster0.lk7mlh3.mongodb.net/?retryWrites=true&w=majority"
 
 client = MongoClient(MONGO_URL)
-db = client["telegram_bot"]
-messages_col = db["scheduled"]
+db = client["bot"]
+
 groups_col = db["groups"]
+messages_col = db["messages"]
 
 authorized_users = set()
-user_states = {}
 
-# 🔐 START PANEL
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton("🔐 Login", callback_data="login")],
-        [InlineKeyboardButton("➕ Add Group", callback_data="addgroup")],
-        [InlineKeyboardButton("➖ Remove Group", callback_data="removegroup")],
-        [InlineKeyboardButton("📤 Schedule Message", callback_data="schedule")]
-    ]
-    await update.message.reply_text("Control Panel 👇", reply_markup=InlineKeyboardMarkup(keyboard))
+# LOGIN
+async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.args and context.args[0] == PASSWORD:
+        authorized_users.add(update.effective_user.id)
+        await update.message.reply_text("Login Done ✅")
+    else:
+        await update.message.reply_text("Wrong Password ❌")
 
-# 🔘 BUTTON HANDLER
-async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+# ADD GROUP
+async def addgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    if chat.type not in ["group", "supergroup"]:
+        return await update.message.reply_text("Use in group ❌")
 
-    user_id = query.from_user.id
+    groups_col.update_one({"chat_id": chat.id}, {"$set": {"chat_id": chat.id, "title": chat.title}}, upsert=True)
+    await update.message.reply_text(f"Group Added ✅\n{chat.title}")
 
-    if query.data == "login":
-        user_states[user_id] = "awaiting_password"
-        await query.message.reply_text("Enter Password:")
+# REMOVE GROUP
+async def removegroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    groups_col.delete_one({"chat_id": chat.id})
+    await update.message.reply_text("Group Removed ❌")
 
-    elif query.data == "addgroup":
-        if user_id not in authorized_users:
-            return await query.message.reply_text("Login first ❌")
-        groups_col.update_one({"chat_id": query.message.chat.id}, {"$set": {"chat_id": query.message.chat.id}}, upsert=True)
-        await query.message.reply_text("Group added ✅")
+# SHOW GROUPS
+async def showgroups(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    groups = list(groups_col.find())
+    if not groups:
+        return await update.message.reply_text("No groups added ❌")
 
-    elif query.data == "removegroup":
-        if user_id not in authorized_users:
-            return await query.message.reply_text("Login first ❌")
-        groups_col.delete_one({"chat_id": query.message.chat.id})
-        await query.message.reply_text("Group removed ❌")
+    text = "📌 Groups:\n"
+    for g in groups:
+        text += f"- {g.get('title', 'Unknown')} ({g['chat_id']})\n"
 
-    elif query.data == "schedule":
-        if user_id not in authorized_users:
-            return await query.message.reply_text("Login first ❌")
-        user_states[user_id] = "awaiting_message"
-        await query.message.reply_text("Send message to schedule")
+    await update.message.reply_text(text)
 
-# 🔑 HANDLE TEXT INPUT
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# SAVE MESSAGE (QUEUE)
+async def save_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    if user_id not in authorized_users:
+        return
 
-    if user_states.get(user_id) == "awaiting_password":
-        if update.message.text == PASSWORD:
-            authorized_users.add(user_id)
-            user_states[user_id] = None
-            await update.message.reply_text("Login successful ✅")
-        else:
-            await update.message.reply_text("Wrong password ❌")
+    messages_col.insert_one({
+        "chat_id": update.message.chat_id,
+        "message_id": update.message.message_id,
+        "time": datetime.utcnow()
+    })
 
-    elif user_states.get(user_id) == "awaiting_message":
-        context.user_data["msg"] = update.message
-        user_states[user_id] = "awaiting_time"
-        await update.message.reply_text("Enter time in seconds (e.g. 60)")
+# BROADCAST (instant)
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in authorized_users:
+        return await update.message.reply_text("Login first ❌")
 
-    elif user_states.get(user_id) == "awaiting_time":
+    if not update.message.reply_to_message:
+        return await update.message.reply_text("Reply to message ❌")
+
+    msg = update.message.reply_to_message
+    groups = list(groups_col.find())
+
+    for g in groups:
         try:
-            seconds = int(update.message.text)
-            send_time = datetime.now() + timedelta(seconds=seconds)
-
-            msg = context.user_data["msg"]
-
-            messages_col.insert_one({
-                "chat_id": msg.chat_id,
-                "message_id": msg.message_id,
-                "send_time": send_time
-            })
-
-            user_states[user_id] = None
-            await update.message.reply_text("Scheduled ✅")
-
+            await context.bot.copy_message(
+                chat_id=g["chat_id"],
+                from_chat_id=msg.chat_id,
+                message_id=msg.message_id
+            )
         except:
-            await update.message.reply_text("Enter valid number ❌")
+            pass
 
-# 🔁 WORKER (batch system)
+    await update.message.reply_text("Broadcast Done ✅")
+
+# WORKER (AUTO 10 MSG / HOUR)
 async def worker(app):
     while True:
-        now = datetime.now()
-        msgs = list(messages_col.find({"send_time": {"$lte": now}}).limit(10))
+        msgs = list(messages_col.find().sort("time", 1).limit(10))
+        groups = list(groups_col.find())
 
         for msg in msgs:
-            groups = groups_col.find()
-
             for g in groups:
                 try:
                     await app.bot.copy_message(
@@ -112,16 +106,18 @@ async def worker(app):
 
             messages_col.delete_one({"_id": msg["_id"]})
 
-        await asyncio.sleep(30)
+        await asyncio.sleep(3600)
 
-async def on_start(app):
+async def start_worker(app):
     app.create_task(worker(app))
 
-app = ApplicationBuilder().token(TOKEN).post_init(on_start).build()
+app = ApplicationBuilder().token(TOKEN).post_init(start_worker).build()
 
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CallbackQueryHandler(button))
-app.add_handler(MessageHandler(filters.ALL, handle_message))
+app.add_handler(CommandHandler("login", login))
+app.add_handler(CommandHandler("addgroup", addgroup))
+app.add_handler(CommandHandler("removegroup", removegroup))
+app.add_handler(CommandHandler("groups", showgroups))
+app.add_handler(CommandHandler("broadcast", broadcast))
+app.add_handler(MessageHandler(filters.ALL, save_msg))
 
-print("UI BOT RUNNING 🔥")
 app.run_polling()
