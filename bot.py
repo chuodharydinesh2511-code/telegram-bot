@@ -1,7 +1,7 @@
 import asyncio
 from datetime import datetime, timedelta
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from pymongo import MongoClient
 
 TOKEN = "8763905320:AAHlYidU6y51XPpoXuZoVdvm7Eh5VGSttw0"
@@ -14,54 +14,87 @@ messages_col = db["scheduled"]
 groups_col = db["groups"]
 
 authorized_users = set()
+user_states = {}
 
-# LOGIN
-async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.args and context.args[0] == PASSWORD:
-        authorized_users.add(update.effective_user.id)
-        await update.message.reply_text("Login success ✅")
-    else:
-        await update.message.reply_text("Wrong password ❌")
+# 🔐 START PANEL
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("🔐 Login", callback_data="login")],
+        [InlineKeyboardButton("➕ Add Group", callback_data="addgroup")],
+        [InlineKeyboardButton("➖ Remove Group", callback_data="removegroup")],
+        [InlineKeyboardButton("📤 Schedule Message", callback_data="schedule")]
+    ]
+    await update.message.reply_text("Control Panel 👇", reply_markup=InlineKeyboardMarkup(keyboard))
 
-def is_auth(user_id):
-    return user_id in authorized_users
+# 🔘 BUTTON HANDLER
+async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
 
-# ADD GROUP
-async def add_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_auth(update.effective_user.id): return
-    groups_col.update_one({"chat_id": update.effective_chat.id}, {"$set": {"chat_id": update.effective_chat.id}}, upsert=True)
-    await update.message.reply_text("Group added ✅")
+    user_id = query.from_user.id
 
-# REMOVE GROUP
-async def remove_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_auth(update.effective_user.id): return
-    groups_col.delete_one({"chat_id": update.effective_chat.id})
-    await update.message.reply_text("Group removed ❌")
+    if query.data == "login":
+        user_states[user_id] = "awaiting_password"
+        await query.message.reply_text("Enter Password:")
 
-# SCHEDULE MESSAGE
-async def schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_auth(update.effective_user.id): return
+    elif query.data == "addgroup":
+        if user_id not in authorized_users:
+            return await query.message.reply_text("Login first ❌")
+        groups_col.update_one({"chat_id": query.message.chat.id}, {"$set": {"chat_id": query.message.chat.id}}, upsert=True)
+        await query.message.reply_text("Group added ✅")
 
-    try:
-        seconds = int(context.args[0])
-        send_time = datetime.utcnow() + timedelta(seconds=seconds)
+    elif query.data == "removegroup":
+        if user_id not in authorized_users:
+            return await query.message.reply_text("Login first ❌")
+        groups_col.delete_one({"chat_id": query.message.chat.id})
+        await query.message.reply_text("Group removed ❌")
 
-        messages_col.insert_one({
-            "chat_id": update.message.chat_id,
-            "message_id": update.message.message_id,
-            "send_time": send_time
-        })
+    elif query.data == "schedule":
+        if user_id not in authorized_users:
+            return await query.message.reply_text("Login first ❌")
+        user_states[user_id] = "awaiting_message"
+        await query.message.reply_text("Send message to schedule")
 
-        await update.message.reply_text(f"Scheduled in {seconds} sec ⏳")
+# 🔑 HANDLE TEXT INPUT
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
 
-    except:
-        await update.message.reply_text("Use: /schedule 3600")
+    if user_states.get(user_id) == "awaiting_password":
+        if update.message.text == PASSWORD:
+            authorized_users.add(user_id)
+            user_states[user_id] = None
+            await update.message.reply_text("Login successful ✅")
+        else:
+            await update.message.reply_text("Wrong password ❌")
 
-# WORKER (10 messages batch + interval)
+    elif user_states.get(user_id) == "awaiting_message":
+        context.user_data["msg"] = update.message
+        user_states[user_id] = "awaiting_time"
+        await update.message.reply_text("Enter time in seconds (e.g. 60)")
+
+    elif user_states.get(user_id) == "awaiting_time":
+        try:
+            seconds = int(update.message.text)
+            send_time = datetime.now() + timedelta(seconds=seconds)
+
+            msg = context.user_data["msg"]
+
+            messages_col.insert_one({
+                "chat_id": msg.chat_id,
+                "message_id": msg.message_id,
+                "send_time": send_time
+            })
+
+            user_states[user_id] = None
+            await update.message.reply_text("Scheduled ✅")
+
+        except:
+            await update.message.reply_text("Enter valid number ❌")
+
+# 🔁 WORKER (batch system)
 async def worker(app):
     while True:
-        now = datetime.utcnow()
-
+        now = datetime.now()
         msgs = list(messages_col.find({"send_time": {"$lte": now}}).limit(10))
 
         for msg in msgs:
@@ -79,18 +112,16 @@ async def worker(app):
 
             messages_col.delete_one({"_id": msg["_id"]})
 
-        await asyncio.sleep(30)  # interval (change kar sakta hai)
+        await asyncio.sleep(30)
 
-# START BACKGROUND TASK
 async def on_start(app):
     app.create_task(worker(app))
 
 app = ApplicationBuilder().token(TOKEN).post_init(on_start).build()
 
-app.add_handler(CommandHandler("login", login))
-app.add_handler(CommandHandler("addgroup", add_group))
-app.add_handler(CommandHandler("removegroup", remove_group))
-app.add_handler(CommandHandler("schedule", schedule))
+app.add_handler(CommandHandler("start", start))
+app.add_handler(CallbackQueryHandler(button))
+app.add_handler(MessageHandler(filters.ALL, handle_message))
 
-print("ULTRA PRO BOT RUNNING 🔥")
+print("UI BOT RUNNING 🔥")
 app.run_polling()
