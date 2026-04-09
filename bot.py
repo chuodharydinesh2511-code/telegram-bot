@@ -112,9 +112,11 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def send_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized_users:
         return await update.message.reply_text("❌ Login first")
+
     msgs = list(messages_col.find().sort("seq", 1).limit(10))
     if not msgs:
         return await update.message.reply_text("❌ Queue empty")
+
     groups = list(groups_col.find())
     sent_count = 0
     for msg in msgs:
@@ -127,8 +129,10 @@ async def send_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             except:
                 pass
+        # 🗑 Auto delete after sending
         messages_col.delete_one({"_id": msg["_id"]})
         sent_count += 1
+
     await update.message.reply_text(f"✅ Sent {sent_count} messages immediately")
 
 # ========= CLEAR QUEUE =========
@@ -143,9 +147,9 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     last_sent = setting.get("last_sent") if setting else None
     next_time = "N/A"
     if last_sent:
-        elapsed = datetime.utcnow() - last_sent
-        interval_sec = 3600
-        remaining_sec = max(interval_sec - elapsed.total_seconds(), 0)
+        interval_sec = setting.get("interval_sec", 3600)
+        elapsed = (datetime.utcnow() - last_sent).total_seconds()
+        remaining_sec = max(interval_sec - elapsed, 0)
         next_time = str(timedelta(seconds=int(remaining_sec)))
     queue_count = messages_col.count_documents({})
     await update.message.reply_text(
@@ -213,6 +217,7 @@ async def worker(app):
                             )
                         except:
                             pass
+                    # 🗑 Auto delete after sending
                     messages_col.delete_one({"_id": msg["_id"]})
                 settings_col.update_one({"_id": "status"}, {"$set": {"last_sent": datetime.utcnow()}})
         await asyncio.sleep(30)
