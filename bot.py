@@ -166,16 +166,29 @@ async def on_start(app):
     app.create_task(worker(app))
 
 # ========= MAIN =========
-app = ApplicationBuilder().token(TOKEN).post_init(on_start).build()
+import asyncio
 
-app.add_handler(CommandHandler("login", login))
-app.add_handler(CommandHandler("addgroup", addgroup))
-app.add_handler(CommandHandler("removegroup", removegroup))
-app.add_handler(CommandHandler("groups", groups))
-app.add_handler(CommandHandler("start_posting", start_posting))
-app.add_handler(CommandHandler("stop_posting", stop_posting))
-app.add_handler(CommandHandler("broadcast", broadcast))
-app.add_handler(MessageHandler(filters.ALL, save_msg))
+async def main():
+    app = ApplicationBuilder().token(TOKEN).build()
 
-print("🔥 FINAL ULTRA BOT RUNNING 🔥")
-app.run_polling(drop_pending_updates=True)
+    app.add_handler(CommandHandler("login", login))
+    app.add_handler(CommandHandler("addgroup", addgroup))
+    app.add_handler(CommandHandler("removegroup", removegroup))
+    app.add_handler(CommandHandler("groups", groups))
+    app.add_handler(CommandHandler("start_posting", start_posting))
+    app.add_handler(CommandHandler("stop_posting", stop_posting))
+    app.add_handler(CommandHandler("broadcast", broadcast))
+    app.add_handler(MessageHandler(filters.ALL, save_msg))
+
+    # start worker AFTER bot starts
+    async def start_worker(app):
+        await asyncio.sleep(5)
+        asyncio.create_task(worker(app))
+
+    app.post_init = start_worker
+
+    print("🔥 BOT RUNNING 🔥")
+    await app.run_polling(drop_pending_updates=True)
+
+if __name__ == "__main__":
+    asyncio.run(main())
