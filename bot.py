@@ -122,7 +122,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("✅ Broadcast sent")
 
-# ========= WORKER =========
+# ========= WORKER (FIXED) =========
 async def worker(app):
     global worker_running
 
@@ -137,23 +137,26 @@ async def worker(app):
         setting = settings_col.find_one({"_id": "status"})
 
         if setting and setting.get("posting"):
-            msgs = list(messages_col.find().sort("seq", 1).limit(10))
             groups = list(groups_col.find())
+            msgs = list(messages_col.find().sort("seq", 1).limit(10))  # max 10 messages per batch
 
-            for msg in msgs:
+            if msgs:
                 for g in groups:
-                    try:
-                        await app.bot.copy_message(
-                            chat_id=g["chat_id"],
-                            from_chat_id=msg["chat_id"],
-                            message_id=msg["message_id"]
-                        )
-                    except:
-                        pass
+                    for msg in msgs:
+                        try:
+                            await app.bot.copy_message(
+                                chat_id=g["chat_id"],
+                                from_chat_id=msg["chat_id"],
+                                message_id=msg["message_id"]
+                            )
+                        except:
+                            pass
 
-                messages_col.delete_one({"_id": msg["_id"]})
+                # Delete messages after sending to avoid duplicates
+                msg_ids = [msg["_id"] for msg in msgs]
+                messages_col.delete_many({"_id": {"$in": msg_ids}})
 
-        await asyncio.sleep(3600)  # ⏱ TEST = 2 min (change to 3600 for 1 hour)
+        await asyncio.sleep(3600)  # 1 hour interval
 
 # ========= MAIN =========
 async def main():
