@@ -4,12 +4,12 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from pymongo import MongoClient
 
-# ================= CONFIG =================
+# ========= CONFIG =========
 TOKEN = "8763905320:AAHlYidU6y51XPpoXuZoVdvm7Eh5VGSttw0"
 PASSWORD = "1234"
-MONGO_URL = "mongodb+srv://ashishhacks4_db_user:e3zBzWLAJxOYjn9Z@cluster0.lk7mlh3.mongodb.net/?retryWrites=true&w=majority"
+MONGO_URL = "mongodb+srv://ashishhacks4_db_user:e3zBzWLAJxOYjn9Z@cluster0.lk7mlh3.mongodb.net/?retryWrites=true&w=majorityL"
 
-# ================= DB =================
+# ========= DB =========
 client = MongoClient(MONGO_URL)
 db = client["ultra_bot"]
 
@@ -17,10 +17,11 @@ groups_col = db["groups"]
 messages_col = db["messages"]
 settings_col = db["settings"]
 
-# ================= MEMORY =================
+# ========= MEMORY =========
 authorized_users = set()
+worker_running = False
 
-# ================= LOGIN =================
+# ========= LOGIN =========
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.args and context.args[0] == PASSWORD:
         authorized_users.add(update.effective_user.id)
@@ -28,12 +29,12 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❌ Wrong password")
 
-# ================= ADD GROUP =================
+# ========= ADD GROUP =========
 async def addgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
 
     if chat.type not in ["group", "supergroup"]:
-        return await update.message.reply_text("❌ Use this in group")
+        return await update.message.reply_text("❌ Use in group")
 
     groups_col.update_one(
         {"chat_id": chat.id},
@@ -43,13 +44,13 @@ async def addgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"✅ Group added: {chat.title}")
 
-# ================= REMOVE GROUP =================
+# ========= REMOVE GROUP =========
 async def removegroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     groups_col.delete_one({"chat_id": chat.id})
     await update.message.reply_text("❌ Group removed")
 
-# ================= SHOW GROUPS =================
+# ========= SHOW GROUPS =========
 async def groups(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = list(groups_col.find())
 
@@ -62,7 +63,7 @@ async def groups(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(text)
 
-# ================= SAVE MESSAGE =================
+# ========= SAVE MESSAGE (FIXED QUEUE) =========
 async def save_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
@@ -73,10 +74,11 @@ async def save_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
         messages_col.insert_one({
             "chat_id": update.message.chat_id,
             "message_id": update.message.message_id,
-            "time": datetime.utcnow()
+            "time": datetime.utcnow(),
+            "seq": datetime.utcnow().timestamp()  # 🔥 PERFECT ORDER FIX
         })
 
-# ================= START POSTING =================
+# ========= START POSTING =========
 async def start_posting(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
@@ -91,7 +93,7 @@ async def start_posting(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("🚀 Auto posting started")
 
-# ================= STOP POSTING =================
+# ========= STOP POSTING =========
 async def stop_posting(update: Update, context: ContextTypes.DEFAULT_TYPE):
     settings_col.update_one(
         {"_id": "status"},
@@ -101,7 +103,7 @@ async def stop_posting(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("⛔ Posting stopped")
 
-# ================= BROADCAST =================
+# ========= BROADCAST =========
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
@@ -126,13 +128,22 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("✅ Broadcast sent")
 
-# ================= WORKER =================
+# ========= WORKER (FINAL FIXED) =========
 async def worker(app):
+    global worker_running
+
+    if worker_running:
+        return  # prevent duplicate worker
+
+    worker_running = True
+
+    await asyncio.sleep(5)
+
     while True:
         setting = settings_col.find_one({"_id": "status"})
 
         if setting and setting.get("posting"):
-            msgs = list(messages_col.find().sort("time", 1).limit(10))
+            msgs = list(messages_col.find().sort("seq", 1).limit(10))  # 🔥 ORDER FIX
             groups = list(groups_col.find())
 
             for msg in msgs:
@@ -148,12 +159,13 @@ async def worker(app):
 
                 messages_col.delete_one({"_id": msg["_id"]})
 
-        await asyncio.sleep(120)  # 1 hour
+        await asyncio.sleep(120)  # ⏱ 1 hour
 
+# ========= START =========
 async def on_start(app):
     app.create_task(worker(app))
 
-# ================= MAIN =================
+# ========= MAIN =========
 app = ApplicationBuilder().token(TOKEN).post_init(on_start).build()
 
 app.add_handler(CommandHandler("login", login))
@@ -165,5 +177,5 @@ app.add_handler(CommandHandler("stop_posting", stop_posting))
 app.add_handler(CommandHandler("broadcast", broadcast))
 app.add_handler(MessageHandler(filters.ALL, save_msg))
 
-print("🔥 ULTRA BOT RUNNING 🔥")
+print("🔥 FINAL ULTRA BOT RUNNING 🔥")
 app.run_polling()
