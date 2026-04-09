@@ -61,13 +61,31 @@ async def groups(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def save_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized_users:
         return
+
     if update.message:
-        messages_col.insert_one({
-            "chat_id": update.message.chat_id,
-            "message_id": update.message.message_id,
-            "time": datetime.utcnow(),
-            "seq": datetime.utcnow().timestamp()
-        })
+        # Agar message album/media group hai
+        if update.message.media_group_id:
+            media_group_id = update.message.media_group_id
+            existing = messages_col.find_one({
+                "media_group_id": media_group_id,
+                "message_id": update.message.message_id
+            })
+            if not existing:
+                messages_col.insert_one({
+                    "chat_id": update.message.chat_id,
+                    "message_id": update.message.message_id,
+                    "media_group_id": media_group_id,
+                    "time": datetime.utcnow(),
+                    "seq": datetime.utcnow().timestamp()
+                })
+        else:
+            # Normal single message
+            messages_col.insert_one({
+                "chat_id": update.message.chat_id,
+                "message_id": update.message.message_id,
+                "time": datetime.utcnow(),
+                "seq": datetime.utcnow().timestamp()
+            })
 
 # ========= START POSTING =========
 async def start_posting(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -127,7 +145,7 @@ async def send_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             except:
                 pass
-        messages_col.delete_one({"_id": msg["_id"]})  # ✅ Delete after sending
+        messages_col.delete_one({"_id": msg["_id"]})
         sent_count += 1
     await update.message.reply_text(f"✅ Sent {sent_count} messages immediately")
 
@@ -141,10 +159,10 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     setting = settings_col.find_one({"_id": "status"})
     posting = setting.get("posting", False) if setting else False
     last_sent = setting.get("last_sent") if setting else None
-    interval_sec = setting.get("interval_sec", 3600) if setting else 3600
     next_time = "N/A"
     if last_sent:
         elapsed = datetime.utcnow() - last_sent
+        interval_sec = setting.get("interval_sec", 3600) if setting else 3600
         remaining_sec = max(interval_sec - elapsed.total_seconds(), 0)
         next_time = str(timedelta(seconds=int(remaining_sec)))
     queue_count = messages_col.count_documents({})
@@ -213,7 +231,8 @@ async def worker(app):
                             )
                         except:
                             pass
-                    messages_col.delete_one({"_id": msg["_id"]})  # ✅ Delete after sending
+                    # ✅ DELETE MESSAGE AFTER SENDING TO CLEAR STORAGE
+                    messages_col.delete_one({"_id": msg["_id"]})
                 settings_col.update_one({"_id": "status"}, {"$set": {"last_sent": datetime.utcnow()}})
         await asyncio.sleep(30)
 
