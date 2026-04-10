@@ -17,7 +17,6 @@ groups_col = db["groups"]
 messages_col = db["messages"]
 settings_col = db["settings"]
 
-# prevent duplicate save
 messages_col.create_index(
     [("chat_id", 1), ("message_id", 1)],
     unique=True
@@ -90,15 +89,24 @@ async def save_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         pass
 
-# ========= START =========
+# ========= START (FIXED INTERVAL) =========
 async def start_posting(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized_users:
         return await update.message.reply_text("❌ Login first")
+
+    existing = settings_col.find_one({"_id": "status"}) or {}
+    interval = existing.get("interval_sec", 3600)
+
     settings_col.update_one(
         {"_id": "status"},
-        {"$set": {"posting": True, "last_sent": None}},
+        {"$set": {
+            "posting": True,
+            "last_sent": None,
+            "interval_sec": interval
+        }},
         upsert=True
     )
+
     await update.message.reply_text("🚀 Auto posting started")
 
 # ========= STOP =========
@@ -204,7 +212,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
-# ========= WORKER (FIXED) =========
+# ========= WORKER (DOUBLE FIX) =========
 async def worker(app):
     while True:
         setting = settings_col.find_one({"_id": "status"})
