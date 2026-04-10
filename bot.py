@@ -17,10 +17,14 @@ groups_col = db["groups"]
 messages_col = db["messages"]
 settings_col = db["settings"]
 
+# 🔥 UNIQUE INDEX (AUTO PREVENT DUPLICATE)
+messages_col.create_index(
+    [("chat_id", 1), ("message_id", 1)],
+    unique=True
+)
+
 # ========= MEMORY =========
 authorized_users = set()
-
-# 🔥 SINGLE GLOBAL LOCK (NO DOUBLE SEND EVER)
 processing_lock = asyncio.Lock()
 
 # ========= LOGIN =========
@@ -61,17 +65,36 @@ async def groups(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(text)
 
-# ========= SAVE MESSAGE (QUEUE FIXED) =========
+# ========= SAVE MESSAGE (FINAL FIX) =========
 async def save_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized_users:
         return
 
-    if update.message:
+    msg = update.message
+    if not msg:
+        return
+
+    # ❌ Ignore edited messages
+    if msg.edit_date:
+        return
+
+    # ❌ Prevent duplicate save
+    exists = messages_col.find_one({
+        "chat_id": msg.chat_id,
+        "message_id": msg.message_id
+    })
+
+    if exists:
+        return
+
+    try:
         messages_col.insert_one({
-            "chat_id": update.message.chat_id,
-            "message_id": update.message.message_id,
+            "chat_id": msg.chat_id,
+            "message_id": msg.message_id,
             "seq": datetime.utcnow().timestamp()
         })
+    except:
+        pass
 
 # ========= START =========
 async def start_posting(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -83,7 +106,6 @@ async def start_posting(update: Update, context: ContextTypes.DEFAULT_TYPE):
         {"$set": {"posting": True, "last_sent": None}},
         upsert=True
     )
-
     await update.message.reply_text("🚀 Auto posting started")
 
 # ========= STOP =========
@@ -126,7 +148,7 @@ async def clear_queue(update: Update, context: ContextTypes.DEFAULT_TYPE):
     messages_col.delete_many({})
     await update.message.reply_text("🗑️ Queue cleared")
 
-# ========= STATUS (FIXED TIMER) =========
+# ========= STATUS =========
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     setting = settings_col.find_one({"_id": "status"})
     queue = messages_col.count_documents({})
@@ -181,7 +203,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("✅ Broadcast sent")
 
-# ========= WORKER (NO DOUBLE SEND EVER) =========
+# ========= WORKER =========
 async def worker(app):
     while True:
         setting = settings_col.find_one({"_id": "status"})
