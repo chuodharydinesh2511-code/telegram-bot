@@ -17,7 +17,7 @@ groups_col = db["groups"]
 messages_col = db["messages"]
 settings_col = db["settings"]
 
-# 🔥 prevent duplicate save
+# prevent duplicate save
 messages_col.create_index(
     [("chat_id", 1), ("message_id", 1)],
     unique=True
@@ -62,7 +62,7 @@ async def groups(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"• {g.get('title','Unknown')} ({g['chat_id']})\n"
     await update.message.reply_text(text)
 
-# ========= SAVE MESSAGE (FIXED) =========
+# ========= SAVE MESSAGE =========
 async def save_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized_users:
         return
@@ -204,7 +204,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
-# ========= WORKER =========
+# ========= WORKER (FIXED) =========
 async def worker(app):
     while True:
         setting = settings_col.find_one({"_id": "status"})
@@ -212,28 +212,40 @@ async def worker(app):
             async with processing_lock:
                 msgs = list(messages_col.find().sort("seq", 1).limit(10))
                 groups = list(groups_col.find())
-                if msgs:
-                    interval = setting.get("interval_sec", 3600)
-                    last_sent = setting.get("last_sent")
-                    if not last_sent:
-                        last_sent = datetime.utcnow() - timedelta(seconds=interval)
-                    elapsed = (datetime.utcnow() - last_sent).total_seconds()
-                    if elapsed >= interval:
-                        for msg in msgs:
-                            for g in groups:
-                                try:
-                                    await app.bot.copy_message(
-                                        chat_id=g["chat_id"],
-                                        from_chat_id=msg["chat_id"],
-                                        message_id=msg["message_id"]
-                                    )
-                                except:
-                                    pass
-                            messages_col.delete_one({"_id": msg["_id"]})
-                        settings_col.update_one(
-                            {"_id": "status"},
-                            {"$set": {"last_sent": datetime.utcnow()}}
-                        )
+
+                if not msgs:
+                    await asyncio.sleep(10)
+                    continue
+
+                interval = setting.get("interval_sec", 3600)
+                last_sent = setting.get("last_sent")
+
+                if not last_sent:
+                    last_sent = datetime.utcnow() - timedelta(seconds=interval)
+
+                elapsed = (datetime.utcnow() - last_sent).total_seconds()
+
+                if elapsed >= interval:
+                    for msg in msgs:
+                        deleted = messages_col.find_one_and_delete({"_id": msg["_id"]})
+                        if not deleted:
+                            continue
+
+                        for g in groups:
+                            try:
+                                await app.bot.copy_message(
+                                    chat_id=g["chat_id"],
+                                    from_chat_id=msg["chat_id"],
+                                    message_id=msg["message_id"]
+                                )
+                            except:
+                                pass
+
+                    settings_col.update_one(
+                        {"_id": "status"},
+                        {"$set": {"last_sent": datetime.utcnow()}}
+                    )
+
         await asyncio.sleep(10)
 
 # ========= MAIN =========
