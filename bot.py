@@ -19,8 +19,9 @@ settings_col = db["settings"]
 
 # ========= MEMORY =========
 authorized_users = set()
-worker_running = False
-send_lock = False   # 🔥 FIX ADDED
+
+# 🔥 SINGLE GLOBAL LOCK (NO DOUBLE SEND EVER)
+processing_lock = asyncio.Lock()
 
 # ========= LOGIN =========
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -45,8 +46,7 @@ async def addgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ========= REMOVE GROUP =========
 async def removegroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
-    groups_col.delete_one({"chat_id": chat.id})
+    groups_col.delete_one({"chat_id": update.effective_chat.id})
     await update.message.reply_text("❌ Group removed")
 
 # ========= SHOW GROUPS =========
@@ -61,7 +61,7 @@ async def groups(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(text)
 
-# ========= SAVE MESSAGE =========
+# ========= SAVE MESSAGE (QUEUE FIXED) =========
 async def save_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized_users:
         return
@@ -70,23 +70,23 @@ async def save_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
         messages_col.insert_one({
             "chat_id": update.message.chat_id,
             "message_id": update.message.message_id,
-            "time": datetime.utcnow(),
             "seq": datetime.utcnow().timestamp()
         })
 
-# ========= START POSTING =========
+# ========= START =========
 async def start_posting(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized_users:
         return await update.message.reply_text("❌ Login first")
 
     settings_col.update_one(
         {"_id": "status"},
-        {"$set": {"posting": True, "last_sent": datetime.utcnow()}},
+        {"$set": {"posting": True, "last_sent": None}},
         upsert=True
     )
+
     await update.message.reply_text("🚀 Auto posting started")
 
-# ========= STOP POSTING =========
+# ========= STOP =========
 async def stop_posting(update: Update, context: ContextTypes.DEFAULT_TYPE):
     settings_col.update_one(
         {"_id": "status"},
@@ -95,13 +95,76 @@ async def stop_posting(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text("⛔ Posting stopped")
 
+# ========= SEND NOW =========
+async def send_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async with processing_lock:
+        msgs = list(messages_col.find().sort("seq", 1).limit(10))
+        if not msgs:
+            return await update.message.reply_text("❌ Queue empty")
+
+        groups = list(groups_col.find())
+        sent = 0
+
+        for msg in msgs:
+            for g in groups:
+                try:
+                    await context.bot.copy_message(
+                        chat_id=g["chat_id"],
+                        from_chat_id=msg["chat_id"],
+                        message_id=msg["message_id"]
+                    )
+                except:
+                    pass
+
+            messages_col.delete_one({"_id": msg["_id"]})
+            sent += 1
+
+        await update.message.reply_text(f"✅ Sent {sent} messages")
+
+# ========= CLEAR =========
+async def clear_queue(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    messages_col.delete_many({})
+    await update.message.reply_text("🗑️ Queue cleared")
+
+# ========= STATUS (FIXED TIMER) =========
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    setting = settings_col.find_one({"_id": "status"})
+    queue = messages_col.count_documents({})
+
+    posting = setting.get("posting", False) if setting else False
+    last_sent = setting.get("last_sent") if setting else None
+    interval = setting.get("interval_sec", 3600) if setting else 3600
+
+    if queue == 0:
+        next_time = "No content in queue"
+    elif not last_sent:
+        next_time = "Ready soon"
+    else:
+        elapsed = (datetime.utcnow() - last_sent).total_seconds()
+        remaining = max(interval - elapsed, 0)
+        next_time = str(timedelta(seconds=int(remaining)))
+
+    await update.message.reply_text(
+        f"📊 Status\n"
+        f"Posting: {'🟢 ON' if posting else '🔴 OFF'}\n"
+        f"Queue: {queue}\n"
+        f"Next: {next_time}"
+    )
+
+# ========= SET INTERVAL =========
+async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    minutes = int(context.args[0])
+    settings_col.update_one(
+        {"_id": "status"},
+        {"$set": {"interval_sec": minutes * 60}},
+        upsert=True
+    )
+    await update.message.reply_text(f"⏱ Interval set to {minutes} min")
+
 # ========= BROADCAST =========
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in authorized_users:
-        return await update.message.reply_text("❌ Login first")
-
     if not update.message.reply_to_message:
-        return await update.message.reply_text("❌ Reply to message")
+        return await update.message.reply_text("❌ Reply required")
 
     msg = update.message.reply_to_message
     groups = list(groups_col.find())
@@ -118,143 +181,46 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("✅ Broadcast sent")
 
-# ========= SEND NOW =========
-async def send_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in authorized_users:
-        return await update.message.reply_text("❌ Login first")
-
-    msgs = list(messages_col.find().sort("seq", 1).limit(10))
-    if not msgs:
-        return await update.message.reply_text("❌ Queue empty")
-
-    groups = list(groups_col.find())
-    sent_count = 0
-
-    for msg in msgs:
-        for g in groups:
-            try:
-                await context.bot.copy_message(
-                    chat_id=g["chat_id"],
-                    from_chat_id=msg["chat_id"],
-                    message_id=msg["message_id"]
-                )
-            except:
-                pass
-
-        messages_col.delete_one({"_id": msg["_id"]})
-        sent_count += 1
-
-    await update.message.reply_text(f"✅ Sent {sent_count} messages immediately")
-
-# ========= CLEAR QUEUE =========
-async def clear_queue(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    messages_col.delete_many({})
-    await update.message.reply_text("🗑️ Queue cleared")
-
-# ========= STATUS (FIXED) =========
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    setting = settings_col.find_one({"_id": "status"})
-    queue_count = messages_col.count_documents({})
-
-    posting = setting.get("posting", False) if setting else False
-
-    if queue_count == 0:
-        next_time = "No content in queue"
-    else:
-        interval_sec = setting.get("interval_sec", 3600) if setting else 3600
-        last_sent = setting.get("last_sent") if setting else None
-
-        if last_sent:
-            elapsed = (datetime.utcnow() - last_sent).total_seconds()
-            remaining = max(interval_sec - elapsed, 0)
-            next_time = str(timedelta(seconds=int(remaining)))
-        else:
-            next_time = "Ready soon"
-
-    await update.message.reply_text(
-        f"📊 Status\n"
-        f"Posting: {'🟢 ON' if posting else '🔴 OFF'}\n"
-        f"Queue: {queue_count}\n"
-        f"Next: {next_time}"
-    )
-
-# ========= SET INTERVAL =========
-async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args or not context.args[0].isdigit():
-        return await update.message.reply_text("❌ Usage: /setinterval <minutes>")
-
-    minutes = int(context.args[0])
-
-    settings_col.update_one(
-        {"_id": "status"},
-        {"$set": {"interval_sec": minutes * 60}},
-        upsert=True
-    )
-
-    await update.message.reply_text(f"⏱ Interval set to {minutes} minutes")
-
-# ========= WORKER (FIXED DOUBLE SEND) =========
+# ========= WORKER (NO DOUBLE SEND EVER) =========
 async def worker(app):
-    global worker_running, send_lock
-
-    if worker_running:
-        return
-    worker_running = True
-
-    await asyncio.sleep(5)
-
     while True:
         setting = settings_col.find_one({"_id": "status"})
 
         if setting and setting.get("posting"):
+            async with processing_lock:
 
-            msgs = list(messages_col.find().sort("seq", 1).limit(10))
-            groups = list(groups_col.find())
+                msgs = list(messages_col.find().sort("seq", 1).limit(10))
+                groups = list(groups_col.find())
 
-            if msgs:
-                interval_sec = setting.get("interval_sec", 3600)
-                last_sent = setting.get("last_sent")
+                if msgs:
+                    interval = setting.get("interval_sec", 3600)
+                    last_sent = setting.get("last_sent")
 
-                if not last_sent:
-                    last_sent = datetime.utcnow() - timedelta(seconds=interval_sec)
+                    if not last_sent:
+                        last_sent = datetime.utcnow() - timedelta(seconds=interval)
 
-                elapsed = (datetime.utcnow() - last_sent).total_seconds()
+                    elapsed = (datetime.utcnow() - last_sent).total_seconds()
 
-                if elapsed >= interval_sec:
+                    if elapsed >= interval:
+                        for msg in msgs:
+                            for g in groups:
+                                try:
+                                    await app.bot.copy_message(
+                                        chat_id=g["chat_id"],
+                                        from_chat_id=msg["chat_id"],
+                                        message_id=msg["message_id"]
+                                    )
+                                except:
+                                    pass
 
-                    if send_lock:
-                        await asyncio.sleep(5)
-                        continue
+                            messages_col.delete_one({"_id": msg["_id"]})
 
-                    send_lock = True
-
-                    for msg in msgs:
-                        for g in groups:
-                            try:
-                                await app.bot.copy_message(
-                                    chat_id=g["chat_id"],
-                                    from_chat_id=msg["chat_id"],
-                                    message_id=msg["message_id"]
-                                )
-                            except:
-                                pass
-
-                        messages_col.delete_one({"_id": msg["_id"]})
-
-                    settings_col.update_one(
-                        {"_id": "status"},
-                        {"$set": {"last_sent": datetime.utcnow()}}
-                    )
-
-                    send_lock = False
+                        settings_col.update_one(
+                            {"_id": "status"},
+                            {"$set": {"last_sent": datetime.utcnow()}}
+                        )
 
         await asyncio.sleep(10)
-
-# ========= HELP =========
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "/login /addgroup /removegroup /groups /start_posting /stop_posting /sendnow /clear /status /setinterval /broadcast"
-    )
 
 # ========= MAIN =========
 async def main():
@@ -266,12 +232,11 @@ async def main():
     app.add_handler(CommandHandler("groups", groups))
     app.add_handler(CommandHandler("start_posting", start_posting))
     app.add_handler(CommandHandler("stop_posting", stop_posting))
-    app.add_handler(CommandHandler("broadcast", broadcast))
     app.add_handler(CommandHandler("sendnow", send_now))
     app.add_handler(CommandHandler("clear", clear_queue))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("setinterval", set_interval))
-    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("broadcast", broadcast))
 
     app.add_handler(MessageHandler(filters.ALL, save_msg))
 
