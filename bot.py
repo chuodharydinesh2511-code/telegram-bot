@@ -17,7 +17,7 @@ groups_col = db["groups"]
 messages_col = db["messages"]
 settings_col = db["settings"]
 
-# 🔥 UNIQUE INDEX (AUTO PREVENT DUPLICATE)
+# 🔥 prevent duplicate save
 messages_col.create_index(
     [("chat_id", 1), ("message_id", 1)],
     unique=True
@@ -40,7 +40,6 @@ async def addgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     if chat.type not in ["group", "supergroup"]:
         return await update.message.reply_text("❌ Use in group")
-
     groups_col.update_one(
         {"chat_id": chat.id},
         {"$set": {"chat_id": chat.id, "title": chat.title}},
@@ -58,14 +57,12 @@ async def groups(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = list(groups_col.find())
     if not data:
         return await update.message.reply_text("❌ No groups added")
-
     text = "📌 Groups List:\n\n"
     for g in data:
         text += f"• {g.get('title','Unknown')} ({g['chat_id']})\n"
-
     await update.message.reply_text(text)
 
-# ========= SAVE MESSAGE (FINAL FIX) =========
+# ========= SAVE MESSAGE (FIXED) =========
 async def save_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized_users:
         return
@@ -74,16 +71,13 @@ async def save_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg:
         return
 
-    # ❌ Ignore edited messages
     if msg.edit_date:
         return
 
-    # ❌ Prevent duplicate save
     exists = messages_col.find_one({
         "chat_id": msg.chat_id,
         "message_id": msg.message_id
     })
-
     if exists:
         return
 
@@ -100,7 +94,6 @@ async def save_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start_posting(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized_users:
         return await update.message.reply_text("❌ Login first")
-
     settings_col.update_one(
         {"_id": "status"},
         {"$set": {"posting": True, "last_sent": None}},
@@ -123,10 +116,8 @@ async def send_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msgs = list(messages_col.find().sort("seq", 1).limit(10))
         if not msgs:
             return await update.message.reply_text("❌ Queue empty")
-
         groups = list(groups_col.find())
         sent = 0
-
         for msg in msgs:
             for g in groups:
                 try:
@@ -137,10 +128,8 @@ async def send_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                 except:
                     pass
-
             messages_col.delete_one({"_id": msg["_id"]})
             sent += 1
-
         await update.message.reply_text(f"✅ Sent {sent} messages")
 
 # ========= CLEAR =========
@@ -152,7 +141,6 @@ async def clear_queue(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     setting = settings_col.find_one({"_id": "status"})
     queue = messages_col.count_documents({})
-
     posting = setting.get("posting", False) if setting else False
     last_sent = setting.get("last_sent") if setting else None
     interval = setting.get("interval_sec", 3600) if setting else 3600
@@ -167,10 +155,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         next_time = str(timedelta(seconds=int(remaining)))
 
     await update.message.reply_text(
-        f"📊 Status\n"
-        f"Posting: {'🟢 ON' if posting else '🔴 OFF'}\n"
-        f"Queue: {queue}\n"
-        f"Next: {next_time}"
+        f"📊 Status\nPosting: {'🟢 ON' if posting else '🔴 OFF'}\nQueue: {queue}\nNext: {next_time}"
     )
 
 # ========= SET INTERVAL =========
@@ -187,10 +172,8 @@ async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.reply_to_message:
         return await update.message.reply_text("❌ Reply required")
-
     msg = update.message.reply_to_message
     groups = list(groups_col.find())
-
     for g in groups:
         try:
             await context.bot.copy_message(
@@ -200,29 +183,41 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except:
             pass
-
     await update.message.reply_text("✅ Broadcast sent")
+
+# ========= HELP =========
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "📌 *Available Commands:*\n\n"
+        "/login <password>\n"
+        "/addgroup\n"
+        "/removegroup\n"
+        "/groups\n"
+        "/start_posting\n"
+        "/stop_posting\n"
+        "/broadcast\n"
+        "/sendnow\n"
+        "/clear\n"
+        "/status\n"
+        "/setinterval <minutes>\n"
+        "/help"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 # ========= WORKER =========
 async def worker(app):
     while True:
         setting = settings_col.find_one({"_id": "status"})
-
         if setting and setting.get("posting"):
             async with processing_lock:
-
                 msgs = list(messages_col.find().sort("seq", 1).limit(10))
                 groups = list(groups_col.find())
-
                 if msgs:
                     interval = setting.get("interval_sec", 3600)
                     last_sent = setting.get("last_sent")
-
                     if not last_sent:
                         last_sent = datetime.utcnow() - timedelta(seconds=interval)
-
                     elapsed = (datetime.utcnow() - last_sent).total_seconds()
-
                     if elapsed >= interval:
                         for msg in msgs:
                             for g in groups:
@@ -234,14 +229,11 @@ async def worker(app):
                                     )
                                 except:
                                     pass
-
                             messages_col.delete_one({"_id": msg["_id"]})
-
                         settings_col.update_one(
                             {"_id": "status"},
                             {"$set": {"last_sent": datetime.utcnow()}}
                         )
-
         await asyncio.sleep(10)
 
 # ========= MAIN =========
@@ -259,6 +251,7 @@ async def main():
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("setinterval", set_interval))
     app.add_handler(CommandHandler("broadcast", broadcast))
+    app.add_handler(CommandHandler("help", help_command))
 
     app.add_handler(MessageHandler(filters.ALL, save_msg))
 
